@@ -18,6 +18,14 @@ class TinyTransformer(nn.Module):
         self.token_embedding = nn.Embedding(vocab_size, d_model)
         self.position_embedding = nn.Embedding(max_seq_len, d_model)
 
+        # Explicit initialization because this weight
+        # is also used by the LM head.
+        nn.init.normal_(
+            self.token_embedding.weight,
+            mean=0.0,
+            std=0.02,
+        )
+
         layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=n_heads,
@@ -33,6 +41,7 @@ class TinyTransformer(nn.Module):
         self.ln = nn.LayerNorm(d_model)
 
         self.lm_head = nn.Linear(d_model, vocab_size, bias=False)
+        self.lm_head.weight = self.token_embedding.weight
 
         self.max_seq_len = max_seq_len
 

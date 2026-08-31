@@ -5,20 +5,72 @@ from torch.utils.data import Dataset
 
 
 class LanguageModelDataset(Dataset):
+    """
+    Fixed-length language-model dataset.
+
+    Each sample is a non-overlapping sequence of
+    `context_length` input tokens and one shifted
+    target sequence.
+
+    Example with context_length=4:
+
+        tokens:
+        [0 1 2 3 4 5 6 7 8 ...]
+
+        sample 0:
+        x = [0 1 2 3]
+        y = [1 2 3 4]
+
+        sample 1:
+        x = [4 5 6 7]
+        y = [5 6 7 8]
+    """
+
     def __init__(
-        self, texts: Sequence[str], tokenizer, context_length: int = 256
-    ) -> None:
+        self,
+        texts: Sequence[str],
+        tokenizer,
+        context_length: int = 256,
+        stride: int | None = None,
+    ):
         self.context_length = context_length
-        encoded: list[int] = []
+        self.stride = stride or context_length
+
+        self.samples: list[tuple[torch.Tensor, torch.Tensor]] = []
 
         for text in texts:
-            encoded.extend(tokenizer.encode(text))
+            ids = tokenizer.encode(text)
 
-        self.data = torch.tensor(encoded, dtype=torch.long)
+            if len(ids) < context_length + 1:
+                continue
+
+            for start in range(
+                0,
+                len(ids) - context_length,
+                self.stride,
+            ):
+                chunk = ids[start : start + context_length + 1]
+
+                if len(chunk) < context_length + 1:
+                    break
+
+                x = torch.tensor(
+                    chunk[:-1],
+                    dtype=torch.long,
+                )
+
+                y = torch.tensor(
+                    chunk[1:],
+                    dtype=torch.long,
+                )
+
+                self.samples.append((x, y))
 
     def __len__(self) -> int:
-        return max(0, len(self.data) - self.context_length)
+        return len(self.samples)
 
-    def __getitem__(self, index: int):
-        chunk = self.data[index : index + self.context_length + 1]
-        return chunk[:-1], chunk[1:]
+    def __getitem__(
+        self,
+        index: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.samples[index]
