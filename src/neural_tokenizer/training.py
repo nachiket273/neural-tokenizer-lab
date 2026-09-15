@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import time
 
 import torch
@@ -10,14 +12,13 @@ def evaluate(
     model,
     loader,
     device,
-    max_batches: int | None = None,
-) -> float:
+    max_batches=None,
+):
     """
-    Calculate mean validation NLL per token.
+    Evaluate mean cross-entropy loss per target token.
 
-    This is useful for monitoring a single tokenizer/model
-    but should NOT be directly compared between BPE and byte
-    models because their token vocabularies differ.
+    Returns:
+        Mean NLL in nats/token.
     """
 
     model.eval()
@@ -25,11 +26,16 @@ def evaluate(
     total_nll = 0.0
     total_tokens = 0
 
+    if max_batches is not None:
+        total = min(max_batches, len(loader))
+    else:
+        total = len(loader)
+
     progress = tqdm(
         loader,
         desc="val",
         leave=False,
-        total=max_batches,
+        total=total,
     )
 
     for batch_idx, (x, y) in enumerate(progress):
@@ -53,6 +59,9 @@ def evaluate(
 
     model.train()
 
+    if total_tokens == 0:
+        raise RuntimeError("Validation loader produced zero target tokens.")
+
     return total_nll / total_tokens
 
 
@@ -61,17 +70,26 @@ def train(
     loader,
     optimizer,
     device,
-    steps: int,
+    steps,
     val_loader=None,
-    val_every: int = 100,
-    val_batches: int | None = None,
+    val_every=100,
+    val_batches=None,
 ):
     """
-    Train a language model and return training history.
+    Train a language model for a fixed number of optimizer steps.
 
-    Returned losses are NLL per representation token.
-    They are useful for tracking learning but are not
-    directly comparable across different tokenizers.
+    History contains one record per optimization step.
+
+    Each record contains:
+
+        step
+        train_loss
+        val_loss
+        time
+        wall_clock_seconds
+        positions
+        total_positions
+        positions_per_second
     """
 
     model.train()
@@ -90,14 +108,23 @@ def train(
 
     for step in progress:
 
+        # ----------------------------------------------------
+        # Get next batch
+        # ----------------------------------------------------
+
         try:
             x, y = next(iterator)
+
         except StopIteration:
             iterator = iter(loader)
             x, y = next(iterator)
 
         x = x.to(device)
         y = y.to(device)
+
+        # ----------------------------------------------------
+        # Optimization step
+        # ----------------------------------------------------
 
         start = time.perf_counter()
 
@@ -116,19 +143,23 @@ def train(
 
         elapsed = time.perf_counter() - start
 
+        # ----------------------------------------------------
+        # Counters
+        # ----------------------------------------------------
+
         batch_positions = y.numel()
 
         total_positions += batch_positions
+
         total_training_time += elapsed
 
-        record = {
-            "step": step,
-            "train_loss": loss.item(),
-            "time": elapsed,
-            "positions": batch_positions,
-            "total_positions": total_positions,
-            "positions_per_second": (batch_positions / elapsed),
-        }
+        positions_per_second = batch_positions / elapsed if elapsed > 0 else 0.0
+
+        # ----------------------------------------------------
+        # Validation
+        # ----------------------------------------------------
+
+        val_loss = None
 
         if val_loader is not None and (step % val_every == 0 or step == steps - 1):
             val_loss = evaluate(
@@ -138,15 +169,37 @@ def train(
                 max_batches=val_batches,
             )
 
-            record["val_loss"] = val_loss
-
             progress.write(
                 f"step={step:05d} "
                 f"train loss={loss.item():.4f} "
                 f"validation loss={val_loss:.4f} "
                 f"time={elapsed:.3f}s"
             )
-        else:
-            record["val_loss"] = None
+
+        # ----------------------------------------------------
+        # Record history
+        # ----------------------------------------------------
+
+        record = {
+            "step": step,
+            "train_loss": float(loss.item()),
+            "val_loss": (float(val_loss) if val_loss is not None else None),
+            "time": float(elapsed),
+            "wall_clock_seconds": float(total_training_time),
+            "positions": int(batch_positions),
+            "total_positions": int(total_positions),
+            "positions_per_second": float(positions_per_second),
+        }
+
+        history.append(record)
+
+    # --------------------------------------------------------
+    # Sanity check
+    # --------------------------------------------------------
+
+    if len(history) != steps:
+        raise RuntimeError(
+            f"Training history has {len(history)} " f"records, expected {steps}."
+        )
 
     return history
